@@ -38,11 +38,12 @@ func (mr *MapReduce) getWorker() {
     }
 }
 
-func (mr *MapReduce) threadCall(availableWorker *WorkerInfo,
-                                jobType JobType,
+func (mr *MapReduce) threadCall(jobType JobType,
                                 jobNumber int,
                                 numOtherPhase int,
                                 jobDone chan int) {
+
+    availableWorker := <- mr.availableWorkers
 
     args := &DoJobArgs{mr.file,
                        jobType,
@@ -53,35 +54,39 @@ func (mr *MapReduce) threadCall(availableWorker *WorkerInfo,
     ok := call(availableWorker.address, "Worker.DoJob", args, &reply)
     if ok == false {
         fmt.Printf("DoWork: RPC %s dojob %s error; jobNumber:%d\n",
-                  availableWorker.address,
-                  jobType,
-                  jobNumber)
-    }
+                   availableWorker.address,
+                   jobType,
+                   jobNumber)
+        fmt.Printf("Reasigned\n")
 
-    jobDone <- 1
-    mr.availableWorkers <- availableWorker
+        mr.threadCall(jobType, jobNumber, numOtherPhase, jobDone)
+    } else {
+        jobDone <- 1
+        mr.availableWorkers <- availableWorker
+    }
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
     nRemainMap := mr.nMap
     nRemainReduce := mr.nReduce
 
-    jobDone := make(chan int, 100)
+    bufferSize := 0
+    if mr.nMap > mr.nReduce {
+        bufferSize = mr.nMap
+    } else {
+        bufferSize = mr.nReduce
+    }
+    jobDone := make(chan int, bufferSize)
 
     go mr.getWorker()
 
-    var availableWorker *WorkerInfo
     for nRemainMap > 0 {
-        availableWorker = <- mr.availableWorkers
-
-        go mr.threadCall(availableWorker, Map, mr.nMap - nRemainMap,
-                         mr.nReduce,
-                         jobDone)
+        go mr.threadCall(Map, mr.nMap - nRemainMap, mr.nReduce, jobDone)
 
         nRemainMap--
     }
 
-    //the main thread have to wait for all workers to finish before it can do Reduce jobs
+    //the main thread have to wait for all workers to finish before it can do Reduce job
     isMapDone := 0
     for {
         <- jobDone
@@ -91,12 +96,7 @@ func (mr *MapReduce) RunMaster() *list.List {
     }
 
     for nRemainReduce > 0 {
-        availableWorker := <- mr.availableWorkers
-
-        go mr.threadCall(availableWorker, Reduce,
-                      mr.nReduce - nRemainReduce,
-                      mr.nMap,
-                      jobDone)
+        go mr.threadCall(Reduce, mr.nReduce - nRemainReduce, mr.nMap, jobDone)
 
         nRemainReduce--
     }
